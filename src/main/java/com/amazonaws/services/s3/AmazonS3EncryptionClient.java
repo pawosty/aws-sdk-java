@@ -391,14 +391,34 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
     @Override
     public PutObjectResult putObject(PutObjectRequest putObjectRequest)
     throws AmazonClientException, AmazonServiceException {
-
-        appendUserAgent(putObjectRequest, USER_AGENT);
+    	return putObject(putObjectRequest, this.encryptionMaterialsProvider);
+    }
+    
+    public PutObjectResult putObject(PutObjectRequest putObjectRequest, EncryptionMaterials encryptionMaterials) throws AmazonClientException, AmazonServiceException {
+    	return putObject(putObjectRequest, new StaticEncryptionMaterialsProvider(encryptionMaterials));
+    }
+    
+    /* (non-Javadoc)
+     * @see com.amazonaws.services.s3.AmazonS3#putObject(java.lang.String, java.lang.String, java.io.InputStream, com.amazonaws.services.s3.model.S3ObjectMetadata)
+     */
+    public PutObjectResult putObject(String bucketName, String key, InputStream input, ObjectMetadata metadata, EncryptionMaterials encryptionMaterials)
+            throws AmazonClientException, AmazonServiceException {
+        return putObject(new PutObjectRequest(bucketName, key, input, metadata), encryptionMaterials);
+    }
+    
+    private PutObjectResult putObject(PutObjectRequest putObjectRequest, EncryptionMaterialsProvider encryptionMaterialsProvider) throws AmazonClientException, AmazonServiceException {
+    	appendUserAgent(putObjectRequest, USER_AGENT);
 
         if (this.cryptoConfig.getStorageMode() == CryptoStorageMode.InstructionFile) {
-            return putObjectUsingInstructionFile(putObjectRequest);
+            return putObjectUsingInstructionFile(putObjectRequest, encryptionMaterialsProvider);
         } else {
-            return putObjectUsingMetadata(putObjectRequest);
+            return putObjectUsingMetadata(putObjectRequest, encryptionMaterialsProvider);
         }
+    }
+    
+    public S3Object getObject(String bucketName, String key, EncryptionMaterials encryptionMaterials)
+            throws AmazonClientException, AmazonServiceException {
+        return getObject(new GetObjectRequest(bucketName, key), encryptionMaterials);
     }
 
     /* (non-Javadoc)
@@ -407,8 +427,16 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
     @Override
     public S3Object getObject(GetObjectRequest getObjectRequest)
     throws AmazonClientException, AmazonServiceException {
-
-        appendUserAgent(getObjectRequest, USER_AGENT);
+    	return getObject(getObjectRequest, this.encryptionMaterialsProvider);
+    }
+    
+    public S3Object getObject(GetObjectRequest getObjectRequest, EncryptionMaterials encryptionMaterials)
+    	    throws AmazonClientException, AmazonServiceException {
+    	return getObject(getObjectRequest, new StaticEncryptionMaterialsProvider(encryptionMaterials));
+    }
+    
+    private S3Object getObject(GetObjectRequest getObjectRequest, EncryptionMaterialsProvider encryptionMaterialsProvider) {
+    	appendUserAgent(getObjectRequest, USER_AGENT);
 
         // Adjust the crypto range to retrieve all of the cipher blocks needed to contain the user's desired
         // range of bytes.
@@ -429,14 +457,14 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
         try {
             // Check if encryption info is in object metadata
             if (EncryptionUtils.isEncryptionInfoInMetadata(retrievedObject)) {
-                objectToBeReturned = decryptObjectUsingMetadata(retrievedObject);
+                objectToBeReturned = decryptObjectUsingMetadata(retrievedObject, encryptionMaterialsProvider);
             } else {
                 // Check if encrypted info is in an instruction file
                 S3Object instructionFile = null;
                 try {
                     instructionFile = getInstructionFile(getObjectRequest);
                     if (EncryptionUtils.isEncryptionInfoInInstructionFile(instructionFile)) {
-                        objectToBeReturned = decryptObjectUsingInstructionFile(retrievedObject, instructionFile);
+                        objectToBeReturned = decryptObjectUsingInstructionFile(retrievedObject, instructionFile, encryptionMaterialsProvider);
                     } else {
                         // The object was not encrypted to begin with.  Return the object without decrypting it.
                         log.warn(String.format("Unable to detect encryption information for object '%s' in bucket '%s'. " +
@@ -691,10 +719,10 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
      *      If any errors occurred in Amazon S3 while processing the
      *      request.
      */
-    private PutObjectResult putObjectUsingMetadata(PutObjectRequest putObjectRequest)
+    private PutObjectResult putObjectUsingMetadata(PutObjectRequest putObjectRequest, EncryptionMaterialsProvider encryptionMaterialsProvider)
     throws AmazonClientException, AmazonServiceException {
         // Create instruction
-        EncryptionInstruction instruction = EncryptionUtils.generateInstruction(this.encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider());
+        EncryptionInstruction instruction = EncryptionUtils.generateInstruction(encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider());
 
         // Encrypt the object data with the instruction
         PutObjectRequest encryptedObjectRequest = EncryptionUtils.encryptRequestUsingInstruction(putObjectRequest, instruction);
@@ -722,10 +750,10 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
      *      If any errors occurred in Amazon S3 while processing the
      *      request.
      */
-    private PutObjectResult putObjectUsingInstructionFile(PutObjectRequest putObjectRequest)
+    private PutObjectResult putObjectUsingInstructionFile(PutObjectRequest putObjectRequest, EncryptionMaterialsProvider encryptionMaterialsProvider)
     throws AmazonClientException, AmazonServiceException {
         // Create instruction
-        EncryptionInstruction instruction = EncryptionUtils.generateInstruction(this.encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider());
+        EncryptionInstruction instruction = EncryptionUtils.generateInstruction(encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider());
 
         // Encrypt the object data with the instruction
         PutObjectRequest encryptedObjectRequest = EncryptionUtils.encryptRequestUsingInstruction(putObjectRequest, instruction);
@@ -749,9 +777,9 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
      * @return
      *      An S3Object with decrypted object contents.  If decryption is not possible, returns null.
      */
-    private S3Object decryptObjectUsingMetadata(S3Object object) {
+    private S3Object decryptObjectUsingMetadata(S3Object object, EncryptionMaterialsProvider encryptionMaterialsProvider) {
         // Create an instruction object from the object headers
-        EncryptionInstruction instruction = EncryptionUtils.buildInstructionFromObjectMetadata( object, this.encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider() );
+        EncryptionInstruction instruction = EncryptionUtils.buildInstructionFromObjectMetadata( object, encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider() );
 
         // Decrypt the object file with the instruction
         return EncryptionUtils.decryptObjectUsingInstruction(object, instruction);
@@ -767,9 +795,9 @@ public class AmazonS3EncryptionClient extends AmazonS3Client {
      * @return
      *      An S3Object with decrypted object contents.
      */
-    private S3Object decryptObjectUsingInstructionFile(S3Object object, S3Object instructionFile) {
+    private S3Object decryptObjectUsingInstructionFile(S3Object object, S3Object instructionFile, EncryptionMaterialsProvider encryptionMaterialsProvider) {
         // Create an instruction object from the retrieved instruction file
-        EncryptionInstruction instruction = EncryptionUtils.buildInstructionFromInstructionFile(instructionFile, this.encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider());
+        EncryptionInstruction instruction = EncryptionUtils.buildInstructionFromInstructionFile(instructionFile, encryptionMaterialsProvider, this.cryptoConfig.getCryptoProvider());
 
         // Decrypt the object file with the instruction
         return EncryptionUtils.decryptObjectUsingInstruction(object, instruction);
